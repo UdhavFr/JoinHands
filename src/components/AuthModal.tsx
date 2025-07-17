@@ -124,7 +124,7 @@ export function AuthModal({ onClose }: AuthModalProps) {
         toast.success('Logged in successfully!');
         onClose();
       } else {
-        const { data, error } = await supabase.auth.signUp({
+        const { error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
           options: {
@@ -132,19 +132,17 @@ export function AuthModal({ onClose }: AuthModalProps) {
               username: username.trim(),
               full_name: fullName.trim(),
               user_type: userType,
-              ...(userType === 'ngo' && { status: 'pending' })
             },
-            emailRedirectTo: `${window.location.origin}/auth/callback`,
           },
         });
 
         if (error) throw error;
-        if (data.user) {
-          toast.success('Check your email for confirmation!');
-          onClose();
-        }
+        
+        toast.success('Account created successfully!');
+        onClose();
       }
     } catch (error) {
+      console.error('Authentication error:', error);
       toast.error(error instanceof Error ? error.message : 'Authentication failed');
     } finally {
       setLoading(false);
