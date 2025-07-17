@@ -1,110 +1,145 @@
-import React from 'react';
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
-import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
-import { toast } from 'react-hot-toast';
+  // src/components/AuthCallbackPage.tsx
+  import { useEffect, useState } from 'react';
+  import { useNavigate } from 'react-router-dom';
+  import { supabase } from '../lib/supabase';
+  import { Loader2, AlertCircle, CheckCircle } from 'lucide-react';
+  import { toast } from 'react-hot-toast';
 
-export function AuthCallbackPage() {
-  const navigate = useNavigate();
-  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
-  const [errorDetails, setErrorDetails] = useState('');
+  interface PublicUser {
+    id: string;
+    user_type?: string;
+    status?: string;
+  }
 
-  useEffect(() => {
-    const authenticateUser = async () => {
-      try {
-        const queryParams = new URLSearchParams(window.location.search);
-        const code = queryParams.get('code');
+  export function AuthCallbackPage() {
+    const navigate = useNavigate();
+    const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+    const [errorMessage, setErrorMessage] = useState('');
 
-        if (!code) throw new Error('No authentication code found in URL');
+    useEffect(() => {
+      const authenticateUser = async () => {
+        try {
+          setStatus('loading');
+          const queryParams = new URLSearchParams(window.location.search);
+          const code = queryParams.get('code');
 
-        // Step 1: Exchange code for session
-        const { error: authError } = await supabase.auth.exchangeCodeForSession(code);
-        if (authError) throw authError;
+          if (!code) {
+            throw new Error('Authentication code not found in URL');
+          }
 
-        // Step 2: Wait for database propagation
-        let retries = 0;
-        const checkUserProfile = async (): Promise<boolean> => {
-          const { data: { user }, error } = await supabase.auth.getUser();
+          // Step 1: Exchange code for session
+          const { error: authError } = await supabase.auth.exchangeCodeForSession(code);
+          if (authError) throw authError;
+
+          // Step 2: Get user data with retry logic
+          let retries = 0;
+          let userVerified = false;
           
-          if (!user || error) {
-            if (retries < 3) {
+          while (retries < 3 && !userVerified) {
+            const { data: { user }, error } = await supabase.auth.getUser();
+            
+            if (error) throw error;
+            if (!user) {
               retries++;
-              await new Promise(resolve => setTimeout(resolve, 500));
-              return checkUserProfile();
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
             }
-            throw new Error('User profile not found');
+
+            // Step 3: Verify user exists in public.users table
+            const { data: publicUserData, error: dbError } = await supabase
+              .from('users')
+              .select('id, user_type, status')
+              .eq('id', user.id)
+              .single();
+
+            if (dbError) {
+              // If columns don't exist, fallback to auth user metadata
+              if (dbError.message.includes('column') && dbError.message.includes('does not exist')) {
+                console.warn('Missing columns in users table:', dbError.message);
+                userVerified = true;
+                setStatus('success');
+                const userType = user.user_metadata?.user_type || 'volunteer';
+                handleRedirection(userType, 'active');
+                break;
+              }
+              throw dbError;
+            }
+
+            if (!publicUserData) {
+              retries++;
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              continue;
+            }
+
+            userVerified = true;
+            setStatus('success');
+            
+            // Step 4: Handle redirection with proper type checking
+            const publicUser = publicUserData as Partial<PublicUser>;
+            const userType = publicUser.user_type || user.user_metadata?.user_type || 'volunteer';
+            const userStatus = publicUser.status || 'active';
+            handleRedirection(userType, userStatus);
           }
 
-          // Check public.users table
-          const { data: publicUser, error: dbError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', user.id)
-            .single();
-
-          if (dbError || !publicUser) {
-            if (retries < 3) {
-              retries++;
-              await new Promise(resolve => setTimeout(resolve, 500));
-              return checkUserProfile();
-            }
-            throw new Error('Failed to verify user in database');
+          if (!userVerified) {
+            throw new Error('User verification timed out. Please try logging in again.');
           }
 
-          return true;
-        };
+        } catch (error) {
+          console.error('Authentication error:', error);
+          setStatus('error');
+          setErrorMessage(
+            error instanceof Error ? error.message : 'An unknown error occurred during login'
+          );
+          toast.error('Login failed');
+          setTimeout(() => navigate('/login'), 3000);
+        }
+      };
 
-        await checkUserProfile();
-        
-        setStatus('success');
-        toast.success('Account successfully verified!');
-        setTimeout(() => navigate('/'), 1500);
+      const handleRedirection = (userType: string, userStatus: string) => {
+        if (userType === 'ngo') {
+          if (userStatus === 'pending') {
+            toast.success('Your NGO application is under review');
+            navigate('/pending-approval', { replace: true });
+          } else {
+            navigate('/ngo-dashboard', { replace: true });
+          }
+        } else {
+          navigate('/', { replace: true });
+        }
+      };
 
-      } catch (error) {
-        console.error('Authentication error:', error);
-        setStatus('error');
-        setErrorDetails(error instanceof Error ? error.message : 'Unknown error');
-        setTimeout(() => navigate('/'), 3000);
-      }
-    };
+      authenticateUser();
+    }, [navigate]);
 
-    authenticateUser();
-  }, [navigate]);
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white rounded-lg shadow-sm p-8 text-center">
+          {status === 'loading' && (
+            <div className="text-rose-600">
+              <Loader2 className="h-12 w-12 mx-auto mb-4 animate-spin" />
+              <h1 className="text-xl font-semibold mb-2">Completing Login</h1>
+              <p className="text-gray-600">Please wait while we verify your account...</p>
+            </div>
+          )}
 
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
-      <div className="max-w-md w-full bg-white rounded-lg shadow-sm p-8 text-center">
-        {status === 'loading' && (
-          <div className="text-rose-600">
-            <Loader2 className="h-12 w-12 mx-auto mb-4 animate-spin" />
-            <h1 className="text-xl font-semibold mb-2">Finalizing Verification</h1>
-            <p className="text-gray-600">This may take a few moments...</p>
-          </div>
-        )}
+          {status === 'success' && (
+            <div className="text-green-600">
+              <CheckCircle className="h-12 w-12 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold mb-2">Login Successful!</h2>
+              <p className="text-gray-600">Redirecting you now...</p>
+            </div>
+          )}
 
-        {status === 'success' && (
-          <div className="text-green-600">
-            <CheckCircle className="h-12 w-12 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Verification Complete!</h2>
-            <p className="text-gray-600">Redirecting to your dashboard...</p>
-          </div>
-        )}
-
-        {status === 'error' && (
-          <div className="text-red-600">
-            <AlertCircle className="h-12 w-12 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold mb-2">Verification Failed</h2>
-            <p className="text-gray-600 mb-4">{errorDetails}</p>
-            <button
-              onClick={() => navigate('/login')}
-              className="text-rose-600 hover:text-rose-700 font-medium"
-            >
-              Return to Login
-            </button>
-          </div>
-        )}
+          {status === 'error' && (
+            <div className="text-red-600">
+              <AlertCircle className="h-12 w-12 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold mb-2">Login Failed</h2>
+              <p className="text-gray-600 mb-4">{errorMessage}</p>
+              <p className="text-sm text-gray-500">You will be redirected to the login page.</p>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
